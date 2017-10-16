@@ -1,0 +1,283 @@
+open HolKernel boolLib bossLib Parse
+open stringLib
+open pegTheory pegexecTheory
+open pegLib
+
+
+val _ = new_theory"argsParse";
+
+val _ = Datatype`
+  args = Single string
+       | Option string (string option)
+`;
+
+val arb_option_def = Define`
+  arb_option = Single ""
+`;
+
+val destSingle_def = Define`
+  destSingle (Single s) = s ∧
+  destSingle _ = ""
+`;
+
+val destOption_def = Define`
+  destOption (Option opt (SOME arg)) = (opt, arg) ∧
+  destOption (Option opt NONE) = (opt, "") ∧
+  destOption _ = ("","")
+`;
+
+val _ = Datatype`
+  args_NT = argList_NT
+          | argOption_NT
+          | argSingle_NT
+`;
+
+val _ = type_abbrev("NT", ``:args_NT inf``);
+val _ = overload_on("mkNT", ``INL : args_NT -> NT``);
+
+val pnt_def = Define`pnt ntsym = nt (mkNT ntsym) I`;
+
+(* have to use these versions of choicel and pegf below because the
+   versions from pegTheory use ARB in their definitions.
+   Logically, the ARBs are harmless, but they completely mess with the
+   CakeML translator.
+*)
+val choicel_def = Define`
+  choicel [] = not (empty ([] : args list)) [] ∧
+  choicel (h::t) = choice h (choicel t) (λs. case s of INL x => x | INR y => y)
+`;
+
+val pegf_def = Define`pegf sym f = seq sym (empty ([] : args list)) (λl1 l2. f l1)`;
+
+val seql_def = Define`
+  seql l f = pegf (FOLDR (\p acc. seq p acc (++)) (empty []) l) f
+`;
+
+val peg_eval_choicel_NIL = store_thm(
+  "peg_eval_choicel_NIL[simp]",
+  ``peg_eval G (i0, choicel []) x = (x = NONE)``,
+  simp[choicel_def, Once peg_eval_cases]);
+
+val peg_eval_choicel_CONS = store_thm(
+  "peg_eval_choicel_CONS",
+  ``∀x. peg_eval G (i0, choicel (h::t)) x ⇔
+          peg_eval G (i0, h) x ∧ x <> NONE ∨
+          peg_eval G (i0,h) NONE ∧ peg_eval G (i0, choicel t) x``,
+  simp[choicel_def, SimpLHS, Once peg_eval_cases] >>
+  simp[pairTheory.FORALL_PROD, optionTheory.FORALL_OPTION]);
+
+val peg0_choicel = store_thm(
+  "peg0_choicel[simp]",
+  ``(peg0 G (choicel []) = F) ∧
+    (peg0 G (choicel (h::t)) ⇔ peg0 G h ∨ pegfail G h ∧ peg0 G (choicel t))``,
+  simp[choicel_def])
+
+val peg0_pegf = store_thm(
+  "peg0_pegf[simp]",
+  ``peg0 G (pegf s f) = peg0 G s``,
+  simp[pegf_def])
+
+val tokeq_def = Define`tokeq t f = tok ((=) t) (K (f t))`
+val grabWS_def = Define`
+  grabWS s = rpt (tok isSpace (K [arb_option])) (K [arb_option]) ~> s
+`;
+
+val ident_def = Define`
+  ident = rpt (tok isAlphaNum (λt. Single [FST t])) (Single o (MAP (HD o destSingle)))
+`;
+
+val argsPEG_def = zDefine`
+  argsPEG : (char, args_NT, args list) peg = <|
+    start := pnt argList_NT ;
+    rules :=
+    FEMPTY |++
+    [(mkNT argList_NT, choicel [seq (choice (pnt argOption_NT)
+                                            (pnt argSingle_NT)
+                                            (λs. case s of INL x => x | INR y => y))
+                                    (pnt argList_NT)
+                                    (++);
+                               grabWS (empty [])]);
+     (mkNT argSingle_NT, grabWS (tokeq #"s" (λs. [Single [s]])));
+     (mkNT argOption_NT, seq (grabWS (tokeq #"o" (λs. [Single [s]])))
+                              (grabWS (tokeq #"a" (λs. [Single [s]])))
+                              (λa b. [Option ((destSingle o HD) a)
+                                             (SOME ((destSingle o HD) b))]))
+    ]|>
+`;
+
+(* wfG proof *)
+
+val argsPEG_start = save_thm(
+  "argsPEG_start[simp]",
+  SIMP_CONV(srw_ss())[argsPEG_def]``argsPEG.start``);
+
+val ds = derive_compset_distincts ``:args_NT``
+val {lookups,fdom_thm,applieds} =
+  derive_lookup_ths {pegth = argsPEG_def
+                    , ntty = ``:args_NT``
+                    , simp = SIMP_CONV (srw_ss())};
+
+val argsPEG_exec_thm = save_thm(
+  "argsPEG_exec_thm",
+  LIST_CONJ(argsPEG_start::ds::lookups));
+
+val _ = computeLib.add_persistent_funs["argsPEG_exec_thm"];
+val _ = save_thm("FDOM_argsPEG", fdom_thm);
+val _ = save_thm("argsPEG_applied", LIST_CONJ applieds);
+
+val frange_image = prove(
+  ``FRANGE fm = IMAGE (FAPPLY fm) (FDOM fm)``,
+  simp[finite_mapTheory.FRANGE_DEF, pred_setTheory.EXTENSION] >> metis_tac[]);
+
+val argsPEG_range =
+    SIMP_CONV (srw_ss())
+              (fdom_thm :: frange_image :: applieds)
+              ``FRANGE argsPEG.rules``;
+
+val subexprs_pnt = prove(
+  ``subexprs (pnt n) = {pnt n}``,
+  simp[subexprs_def, pnt_def]);
+
+val Gexprs_argsPEG = save_thm(
+  "Gexprs_argsPEG",
+  ``Gexprs argsPEG``
+    |> SIMP_CONV (srw_ss())
+         [Gexprs_def, subexprs_def,
+          subexprs_pnt, argsPEG_start, argsPEG_range,
+          ignoreR_def, ignoreL_def,
+          choicel_def, tokeq_def, pegf_def, grabWS_def,
+          checkAhead_def,
+          pred_setTheory.INSERT_UNION_EQ
+         ]);
+
+
+val wfpeg_rwts = wfpeg_cases
+                   |> ISPEC ``argsPEG``
+                   |> (fn th => map (fn t => Q.SPEC t th)
+                                    [`seq e1 e2 f`, `choice e1 e2 f`, `tok P f`,
+                                     `any f`, `empty v`, `not e v`, `rpt e f`,
+                                     `tokeq t f`, `pegf e f`, `choicel []`,
+                                     `choicel (h::l)`
+                      ])
+                   |> map (CONV_RULE
+                             (RAND_CONV (SIMP_CONV (srw_ss())
+                                [choicel_def, tokeq_def, ignoreL_def,
+                                 ignoreR_def, pegf_def, grabWS_def])));
+
+val peg0_grabWS = Q.prove(
+  `peg0 argsPEG (grabWS e) = peg0 argsPEG e`,
+  simp [ignoreL_def, grabWS_def, peg0_rules]);
+
+val wfpeg_grabWS = (* wfpeg argsPEG (grabWS e) ⇔ wfpeg argsPEG e *)
+  SIMP_CONV (srw_ss()) ([grabWS_def, ignoreL_def, peg0_grabWS] @ wfpeg_rwts)
+                       ``wfpeg argsPEG (grabWS e)``;
+
+val wfpeg_pnt = wfpeg_cases
+                  |> ISPEC ``argsPEG``
+                  |> Q.SPEC `pnt n`
+                  |> CONV_RULE (RAND_CONV (SIMP_CONV (srw_ss()) [pnt_def]));
+
+
+val peg0_rwts = peg0_cases
+                  |> ISPEC ``argsPEG`` |> CONJUNCTS
+                  |> map (fn th => map (fn t => Q.SPEC t th)
+                                       [`tok P f`, `choice e1 e2 f`, `seq e1 e2 f`,
+                                        `tokeq t f`, `empty l`, `not e v`, `rpt e f`])
+                  |> List.concat
+                  |> map (CONV_RULE
+                            (RAND_CONV (SIMP_CONV (srw_ss())
+                                                  [tokeq_def])));
+
+
+val pegfail_t = ``pegfail``;
+
+val peg0_rwts = let
+  fun filterthis th = let
+    val c = concl th
+    val (l,r) = dest_eq c
+    val (f,_) = strip_comb l
+  in
+    not (same_const pegfail_t f) orelse is_const r
+  end
+in
+  List.filter filterthis peg0_rwts
+end;
+
+val pegnt_case_ths = peg0_cases
+                      |> ISPEC ``argsPEG`` |> CONJUNCTS
+                      |> map (Q.SPEC `pnt n`)
+                      |> map (CONV_RULE (RAND_CONV (SIMP_CONV (srw_ss()) [pnt_def])))
+
+fun pegnt(t,acc) = let
+  val th =
+      prove(``¬peg0 argsPEG (pnt ^t)``,
+            simp (fdom_thm::choicel_def::ignoreL_def::grabWS_def::ignoreR_def::applieds @ pegnt_case_ths) >>
+            simp(peg0_rwts @ acc))
+  val nm = "peg0_" ^ term_to_string t
+  val th' = save_thm(nm, SIMP_RULE bool_ss [pnt_def] th)
+  val _ = export_rewrites [nm]
+in
+  th::acc
+end;
+
+val npeg0_rwts =
+    List.foldl pegnt []
+   [``argOption_NT``,
+    ``argSingle_NT``];
+
+fun wfnt(t,acc) = let
+  val th =
+    prove(``wfpeg argsPEG (pnt ^t)``,
+          SIMP_TAC (srw_ss())
+                   (applieds @
+                    [wfpeg_pnt, fdom_thm, ignoreL_def, ignoreR_def,
+                     checkAhead_def]) THEN
+          fs(peg0_grabWS :: wfpeg_grabWS :: wfpeg_rwts @ npeg0_rwts @ acc) THEN
+         rw [choicel_def])
+in
+  th::acc
+end;
+
+val wfpeg_thm = LIST_CONJ (List.foldl wfnt [] [``argOption_NT``,
+                                               ``argSingle_NT``,
+                                               ``argList_NT``]);
+
+
+
+val wfG_argsPEG = store_thm(
+  "wfG_argsPEG",
+  ``wfG argsPEG``,
+  rw[wfG_def,Gexprs_argsPEG] >>
+  srw_tac[boolSimps.DNF_ss][] >>
+  simp(wfpeg_thm :: wfpeg_rwts));
+
+val _ = export_rewrites ["wfG_argsPEG"];
+
+
+val _ = monadsyntax.temp_add_monadsyntax()
+val _ = overload_on ("monad_bind", “OPTION_BIND”)
+val _ = overload_on ("assert", “OPTION_GUARD”)
+
+
+val parse_args_def = Define`
+  parse_args s = do
+    (rest,args) <- destResult (peg_exec argsPEG (pnt argList_NT) s [] done failed);
+    if rest <> [] then NONE else SOME args
+  od
+`;
+
+val _ = computeLib.add_persistent_funs ["option.OPTION_BIND_def",
+                                        "option.OPTION_IGNORE_BIND_def",
+                                        "option.OPTION_GUARD_def",
+                                        "option.OPTION_CHOICE_def"]
+
+
+val start_locs_def = zDefine`
+  start_locs : locs = Locs (<|row := 0 ; col := 0 ; offset := 0|>)
+                           (<|row := 0 ; col := 0 ; offset := 0|>)
+`;
+
+
+
+
+val _ = export_theory()
