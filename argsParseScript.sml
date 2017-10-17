@@ -3,6 +3,8 @@ open stringLib
 open pegTheory pegexecTheory
 open pegLib
 
+open basisProgTheory
+
 
 val _ = new_theory"argsParse";
 
@@ -83,7 +85,8 @@ val grabWS_def = Define`
 `;
 
 val ident_def = Define`
-  ident = rpt (tok isAlphaNum (λt. Single [FST t])) (Single o (MAP (HD o destSingle)))
+  ident = rpt (tok isAlphaNum (λt. [Single [FST t]]))
+              (λt. [(Single o (MAP (HD o destSingle o HD))) t])
 `;
 
 val argsPEG_def = zDefine`
@@ -91,17 +94,18 @@ val argsPEG_def = zDefine`
     start := pnt argList_NT ;
     rules :=
     FEMPTY |++
-    [(mkNT argList_NT, choicel [seq (choice (pnt argOption_NT)
-                                            (pnt argSingle_NT)
-                                            (λs. case s of INL x => x | INR y => y))
-                                    (pnt argList_NT)
-                                    (++);
-                               grabWS (empty [])]);
-     (mkNT argSingle_NT, grabWS (tokeq #"s" (λs. [Single [s]])));
-     (mkNT argOption_NT, seq (grabWS (tokeq #"o" (λs. [Single [s]])))
-                              (grabWS (tokeq #"a" (λs. [Single [s]])))
-                              (λa b. [Option ((destSingle o HD) a)
-                                             (SOME ((destSingle o HD) b))]))
+    [(mkNT argList_NT, grabWS (choicel [seq (choice (pnt argOption_NT)
+                                                    (pnt argSingle_NT)
+                                                    (λs. case s of INL x => x
+                                                                 | INR y => y))
+                                            (pnt argList_NT)
+                                            (++);
+                                        empty []]));
+     (mkNT argSingle_NT, tokeq #"-" (K []) ~> tok isAlphaNum (λt. [Single [FST t]]));
+     (mkNT argOption_NT, seq (seql [tokeq #"-" (K []); tokeq #"-" (K [])] (K []) ~> ident)
+                             (grabWS ident)
+                             (λopt arg. [Option ((destSingle o HD) opt)
+                                                (SOME ((destSingle o HD) arg))]))
     ]|>
 `;
 
@@ -146,7 +150,7 @@ val Gexprs_argsPEG = save_thm(
           subexprs_pnt, argsPEG_start, argsPEG_range,
           ignoreR_def, ignoreL_def,
           choicel_def, tokeq_def, pegf_def, grabWS_def,
-          checkAhead_def,
+          checkAhead_def, seql_def,
           pred_setTheory.INSERT_UNION_EQ
          ]);
 
@@ -162,7 +166,7 @@ val wfpeg_rwts = wfpeg_cases
                    |> map (CONV_RULE
                              (RAND_CONV (SIMP_CONV (srw_ss())
                                 [choicel_def, tokeq_def, ignoreL_def,
-                                 ignoreR_def, pegf_def, grabWS_def])));
+                                 ignoreR_def, pegf_def, grabWS_def, seql_def])));
 
 val peg0_grabWS = Q.prove(
   `peg0 argsPEG (grabWS e) = peg0 argsPEG e`,
@@ -171,6 +175,16 @@ val peg0_grabWS = Q.prove(
 val wfpeg_grabWS = (* wfpeg argsPEG (grabWS e) ⇔ wfpeg argsPEG e *)
   SIMP_CONV (srw_ss()) ([grabWS_def, ignoreL_def, peg0_grabWS] @ wfpeg_rwts)
                        ``wfpeg argsPEG (grabWS e)``;
+
+val peg0_seql = store_thm(
+  "peg0_seql",
+  ``(peg0 G (seql [] f) ⇔ T) ∧
+    (peg0 G (seql (h::t) f) ⇔ peg0 G h ∧ peg0 G (seql t I))``,
+  simp[seql_def]);
+
+val wfpeg_seql = (* wfpeg argsPEG (grabWS e) ⇔ wfpeg argsPEG e *)
+  SIMP_CONV (srw_ss()) ([seql_def, ignoreL_def, peg0_seql] @ wfpeg_rwts)
+                       ``wfpeg argsPEG (seql l f)``;
 
 val wfpeg_pnt = wfpeg_cases
                   |> ISPEC ``argsPEG``
@@ -211,7 +225,7 @@ val pegnt_case_ths = peg0_cases
 fun pegnt(t,acc) = let
   val th =
       prove(``¬peg0 argsPEG (pnt ^t)``,
-            simp (fdom_thm::choicel_def::ignoreL_def::grabWS_def::ignoreR_def::applieds @ pegnt_case_ths) >>
+            simp (seql_def::ident_def::fdom_thm::choicel_def::ignoreL_def::grabWS_def::ignoreR_def::applieds @ pegnt_case_ths) >>
             simp(peg0_rwts @ acc))
   val nm = "peg0_" ^ term_to_string t
   val th' = save_thm(nm, SIMP_RULE bool_ss [pnt_def] th)
@@ -231,8 +245,8 @@ fun wfnt(t,acc) = let
           SIMP_TAC (srw_ss())
                    (applieds @
                     [wfpeg_pnt, fdom_thm, ignoreL_def, ignoreR_def,
-                     checkAhead_def]) THEN
-          fs(peg0_grabWS :: wfpeg_grabWS :: wfpeg_rwts @ npeg0_rwts @ acc) THEN
+                     checkAhead_def, ident_def]) THEN
+          fs(peg0_seql :: peg0_grabWS :: wfpeg_seql :: wfpeg_grabWS :: wfpeg_rwts @ npeg0_rwts @ acc) THEN
          rw [choicel_def])
 in
   th::acc
@@ -242,12 +256,10 @@ val wfpeg_thm = LIST_CONJ (List.foldl wfnt [] [``argOption_NT``,
                                                ``argSingle_NT``,
                                                ``argList_NT``]);
 
-
-
 val wfG_argsPEG = store_thm(
   "wfG_argsPEG",
   ``wfG argsPEG``,
-  rw[wfG_def,Gexprs_argsPEG] >>
+  rw[wfG_def,Gexprs_argsPEG,ident_def] >>
   srw_tac[boolSimps.DNF_ss][] >>
   simp(wfpeg_thm :: wfpeg_rwts));
 
@@ -258,26 +270,38 @@ val _ = monadsyntax.temp_add_monadsyntax()
 val _ = overload_on ("monad_bind", “OPTION_BIND”)
 val _ = overload_on ("assert", “OPTION_GUARD”)
 
-
-val parse_args_def = Define`
-  parse_args s = do
-    (rest,args) <- destResult (peg_exec argsPEG (pnt argList_NT) s [] done failed);
-    if rest <> [] then NONE else SOME args
-  od
-`;
-
 val _ = computeLib.add_persistent_funs ["option.OPTION_BIND_def",
                                         "option.OPTION_IGNORE_BIND_def",
                                         "option.OPTION_GUARD_def",
-                                        "option.OPTION_CHOICE_def"]
+                                        "option.OPTION_CHOICE_def"];
 
 
-val start_locs_def = zDefine`
+val start_locs_def = Define`
   start_locs : locs = Locs (<|row := 0 ; col := 0 ; offset := 0|>)
                            (<|row := 0 ; col := 0 ; offset := 0|>)
 `;
 
+val add_locs_def = Define`
+  add_locs l =
+    let new_char loc = loc with <| col  := loc.col + 1 ;
+                                 offset := loc.offset + 1 |>;
+        new_line loc = loc with <| row  := loc.row + 1 ;
+                                 offset := loc.offset + 1 ;
+                                 col    := 0 |>;
+       update_locs locs f = locs_CASE locs (λl r. Locs (f l) (f r));
+       update c (locs,s) = case c of
+                            | #"\n" => let l = update_locs locs new_line
+                                       in (l,(#"\n",l)::s)
+                            | _     => let l = update_locs locs new_char
+                                       in (l,(c,l)::s)
+    in SND (FOLDR update (start_locs,[]) l)
+`;
 
-
+val parse_args_def = Define`
+  parse_args s = do
+    (rest,args) <- destResult (peg_exec argsPEG (pnt argList_NT) (add_locs s) [] done failed);
+    if rest <> [] then NONE else SOME args
+  od
+`;
 
 val _ = export_theory()
