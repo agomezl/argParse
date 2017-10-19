@@ -5,8 +5,11 @@ open pegLib
 
 open basisProgTheory
 
+open ml_translatorLib
 
 val _ = new_theory"argsParse";
+
+val _ = translation_extends"ioProg";
 
 val _ = Datatype`
   args = Single string
@@ -303,5 +306,24 @@ val parse_args_def = Define`
     if rest <> [] then NONE else SOME args
   od
 `;
+
+val INTRO_FLOOKUP = Q.store_thm("INTRO_FLOOKUP",
+  `(if n IN FDOM G.rules
+     then EV (G.rules ' n) i r y fk
+     else Result xx) =
+    (case FLOOKUP G.rules n of
+       NONE => Result xx
+     | SOME x => EV x i r y fk)`,
+  SRW_TAC [] [finite_mapTheory.FLOOKUP_DEF]);
+
+val coreloop_def' =
+( pegexecTheory.coreloop_def
+    |> REWRITE_RULE [INTRO_FLOOKUP]
+    |> SPEC_ALL |> ONCE_REWRITE_RULE [FUN_EQ_THM]);
+
+val r = translate coreloop_def';
+
+val r = translate (pegexecTheory.peg_exec_def);
+
 
 val _ = export_theory()
