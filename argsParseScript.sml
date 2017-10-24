@@ -1,15 +1,9 @@
-open HolKernel boolLib bossLib Parse
-open stringLib
-open pegTheory pegexecTheory
-open pegLib
+open preamble basisFunctionsLib
 
-open basisProgTheory
+open pegTheory pegexecTheory pegLib
 
-open ml_translatorLib
 
 val _ = new_theory"argsParse";
-
-val _ = translation_extends"ioProg";
 
 val _ = Datatype`
   args = Single string
@@ -89,7 +83,7 @@ val grabWS_def = Define`
 
 val ident_def = Define`
   ident = rpt (tok isAlphaNum (λt. [Single [FST t]]))
-              (λt. [(Single o (MAP (HD o destSingle o HD))) t])
+              (λt. [Single (FOLDR  (λa b. (FOLDR (λa b. destSingle a) [] a) ++ b) [] t)])
 `;
 
 val argsPEG_def = zDefine`
@@ -107,8 +101,8 @@ val argsPEG_def = zDefine`
      (mkNT argSingle_NT, tokeq #"-" (K []) ~> tok isAlphaNum (λt. [Single [FST t]]));
      (mkNT argOption_NT, seq (seql [tokeq #"-" (K []); tokeq #"-" (K [])] (K []) ~> ident)
                              (grabWS ident)
-                             (λopt arg. [Option ((destSingle o HD) opt)
-                                                (SOME ((destSingle o HD) arg))]))
+                             (λopt arg. [Option (FOLDR (λa b. destSingle a) [] opt)
+                                                (FOLDR (λa b. SOME (destSingle a)) NONE arg)]))
     ]|>
 `;
 
@@ -306,24 +300,6 @@ val parse_args_def = Define`
     if rest <> [] then NONE else SOME args
   od
 `;
-
-val INTRO_FLOOKUP = Q.store_thm("INTRO_FLOOKUP",
-  `(if n IN FDOM G.rules
-     then EV (G.rules ' n) i r y fk
-     else Result xx) =
-    (case FLOOKUP G.rules n of
-       NONE => Result xx
-     | SOME x => EV x i r y fk)`,
-  SRW_TAC [] [finite_mapTheory.FLOOKUP_DEF]);
-
-val coreloop_def' =
-( pegexecTheory.coreloop_def
-    |> REWRITE_RULE [INTRO_FLOOKUP]
-    |> SPEC_ALL |> ONCE_REWRITE_RULE [FUN_EQ_THM]);
-
-val r = translate coreloop_def';
-
-val r = translate (pegexecTheory.peg_exec_def);
 
 
 val _ = export_theory()
