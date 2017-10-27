@@ -83,7 +83,7 @@ val grabWS_def = Define`
 
 val ident_def = Define`
   ident = rpt (tok isAlphaNum (λt. [Single [FST t]]))
-              (λt. [Single (FOLDR  (λa b. (FOLDR (λa b. destSingle a) [] a) ++ b) [] t)])
+              ((λn. if n = "" then [] else [Single n]) o CONCAT o (MAP (CONCAT o MAP destSingle)))
 `;
 
 val argsPEG_def = zDefine`
