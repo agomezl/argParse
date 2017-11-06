@@ -1,39 +1,68 @@
-open preamble basisFunctionsLib
+open preamble basis
 
 open pegTheory pegexecTheory pegLib
 
-
 val _ = new_theory"argsParse";
 
+(* Datatype representing all the possible options/flags *)
 val _ = Datatype`
-  args = Single string
-       | Option string (string option)
+  arg =
+  (* Simple flags of the form -<ident> eg: -h *)
+         ShortFlag mlstring
+  (* Long flags of the form --<ident>+ eg: --help *)
+       | LongFlag mlstring
+  (* Long flags with option of the form --<ident>+=<ident>+
+     eg: --arch=arm6 *)
+       | OptionFlag mlstring mlstring
+  (* Standalone option of the form <ident>+ eg: cake.S*)
+       | Option mlstring
+  (* Where <ident> is equal to the regular expression [a-zA-Z0-9.-/_]
+     (or similar) *)
 `;
 
-val arb_option_def = Define`
-  arb_option = Single ""
+(* An arbitrary term of 'arg' to serve as ARB in some definitions *)
+val arb_arg_def = Define`
+  arb_arg = Option (implode "")
 `;
 
-val destSingle_def = Define`
-  destSingle (Single s) = s ∧
-  destSingle _ = ""
+(* Destructors for 'arg' terms *)
+
+val destShortFlag_def = Define`
+  destShortFlag (ShortFlag flag) = flag ∧
+  destShortFlag _ = (implode "")
 `;
 
 val destOption_def = Define`
-  destOption (Option opt (SOME arg)) = (opt, arg) ∧
-  destOption (Option opt NONE) = (opt, "") ∧
-  destOption _ = ("","")
+  destOption (Option opt) = opt ∧
+  destOption _ = (implode "")
 `;
 
+val destLongFlag = Define`
+  destLongFlag (LongFlag flag) = flag ∧
+  destLongFlag _ = (implode "")
+`;
+
+val destOptionFlag = Define`
+  destOptionFlag (OptionFlag flag opt) = (flag,opt) ∧
+  destOptionFlag _ = ((implode ""),(implode ""))
+`;
+
+(* Non Terminal for the grammar *)
 val _ = Datatype`
-  args_NT = argList_NT
-          | argOption_NT
-          | argSingle_NT
+  arg_NT = init_NT
+         | ShortFlag_NT
+         | LongFlag_NT
+         | OptionFlag_NT
+         | Option_NT
 `;
 
-val _ = type_abbrev("NT", ``:args_NT inf``);
-val _ = overload_on("mkNT", ``INL : args_NT -> NT``);
+(* Some abbreviations to make things nicer *)
+val _ = type_abbrev("NT", ``:arg_NT inf``);
+val _ = overload_on("mkNT", ``INL : arg_NT -> NT``);
 
+
+(* Generates a 'pegsym' non terminal from a 'arg_NT' *)
+(* TODO: maybe generalize this? *)
 val pnt_def = Define`pnt ntsym = nt (mkNT ntsym) I`;
 
 (* have to use these versions of choicel and pegf below because the
@@ -41,16 +70,17 @@ val pnt_def = Define`pnt ntsym = nt (mkNT ntsym) I`;
    Logically, the ARBs are harmless, but they completely mess with the
    CakeML translator.
 *)
+
+(* Chooses from a list of posible options *)
 val choicel_def = Define`
-  choicel [] = not (empty ([] : args list)) [] ∧
+  choicel [] = not (empty arb_arg) arb_arg ∧
   choicel (h::t) = choice h (choicel t) (λs. case s of INL x => x | INR y => y)
 `;
 
-val pegf_def = Define`pegf sym f = seq sym (empty ([] : args list)) (λl1 l2. f l1)`;
+(* Applies a function over the result of 'sym' *)
+val pegf_def = Define`pegf sym f = seq sym (empty arb_arg) (λl1 l2. f l1)`;
 
-val seql_def = Define`
-  seql l f = pegf (FOLDR (\p acc. seq p acc (++)) (empty []) l) f
-`;
+(* Some proofs about pegf and choicel *)
 
 val peg_eval_choicel_NIL = store_thm(
   "peg_eval_choicel_NIL[simp]",
@@ -76,84 +106,101 @@ val peg0_pegf = store_thm(
   ``peg0 G (pegf s f) = peg0 G s``,
   simp[pegf_def])
 
-val tokeq_def = Define`tokeq t f = tok ((=) t) (K (f t))`
+val tokeq_def = Define`tokeq t f = tok ((=) t) (K (f t))`;
+
 val grabWS_def = Define`
-  grabWS s = rpt (tok isSpace (K [arb_option])) (K [arb_option]) ~> s
+  grabWS s = rpt (tok isSpace (K arb_arg)) (K arb_arg) ~> s
 `;
 
+(* Identifiers *)
+(* TODO: add extra characters [-._/\] *)
 val ident_def = Define`
-  ident = rpt (tok isAlphaNum (λt. [Single [FST t]]))
-              ((λn. if n = "" then [] else [Single n]) o CONCAT o (MAP (CONCAT o MAP destSingle)))
+  ident = let id      = tok isAlphaNum (λt. Option (implode [FST t]));
+              arb_str = implode "";
+              joins   = Option o FOLDR (λw l. strcat (destOption w) l) arb_str;
+              join    = (λx y. Option (strcat (destOption x) (destOption y)))
+          in seq id (rpt id joins) join
+
 `;
 
-val argsPEG_def = zDefine`
-  argsPEG : (char, args_NT, args list) peg = <|
-    start := pnt argList_NT ;
+val argPEG_def = zDefine`
+  argPEG : (char, arg_NT, arg) peg = <|
+    start := pnt init_NT ;
     rules :=
     FEMPTY |++
-    [(mkNT argList_NT, grabWS (choicel [seq (choice (pnt argOption_NT)
-                                                    (pnt argSingle_NT)
-                                                    (λs. case s of INL x => x
-                                                                 | INR y => y))
-                                            (pnt argList_NT)
-                                            (++);
-                                        empty []]));
-     (mkNT argSingle_NT, tokeq #"-" (K []) ~> tok isAlphaNum (λt. [Single [FST t]]));
-     (mkNT argOption_NT, seq (seql [tokeq #"-" (K []); tokeq #"-" (K [])] (K []) ~> ident)
-                             (grabWS ident)
-                             (λopt arg. [Option (FOLDR (λa b. destSingle a) [] opt)
-                                                (FOLDR (λa b. SOME (destSingle a)) NONE arg)]))
+    (*  A argument is one of four options *)
+    [(mkNT init_NT, choicel [pnt ShortFlag_NT;
+                             pnt LongFlag_NT;
+                             pnt OptionFlag_NT;
+                             pnt Option_NT]);
+     (* A short flag, containing 1 or more letters, each letter
+        representing a diferent flag
+      *)
+     (mkNT ShortFlag_NT, tokeq #"-" (K arb_arg) ~>
+                               pegf ident (ShortFlag o destOption));
+     (* A long flag *)
+     (mkNT LongFlag_NT, (tokeq #"-" (K arb_arg) ~> tokeq #"-" (K arb_arg) ~>
+                              pegf ident (LongFlag o destOption))
+                         <~ not (tokeq #"=" (K arb_arg)) arb_arg);
+     (* A Composed flag with an attached value *)
+     (mkNT OptionFlag_NT, tokeq #"-" (K arb_arg) ~> tokeq #"-" (K arb_arg) ~>
+                             seq ident                      (* Flag *)
+                                 (tokeq #"=" (K arb_arg) ~> (* = *)
+                                 ident)                     (* Value *)
+                                 (λopt str. OptionFlag (destOption opt)
+                                                       (destOption str)));
+     (* Any other option *)
+     (mkNT Option_NT, ident)
     ]|>
 `;
 
 (* wfG proof *)
 
-val argsPEG_start = save_thm(
-  "argsPEG_start[simp]",
-  SIMP_CONV(srw_ss())[argsPEG_def]``argsPEG.start``);
+val argPEG_start = save_thm(
+  "argPEG_start[simp]",
+  SIMP_CONV(srw_ss())[argPEG_def]``argPEG.start``);
 
-val ds = derive_compset_distincts ``:args_NT``
+val ds = derive_compset_distincts ``:arg_NT``
 val {lookups,fdom_thm,applieds} =
-  derive_lookup_ths {pegth = argsPEG_def
-                    , ntty = ``:args_NT``
+  derive_lookup_ths {pegth = argPEG_def
+                    , ntty = ``:arg_NT``
                     , simp = SIMP_CONV (srw_ss())};
 
-val argsPEG_exec_thm = save_thm(
-  "argsPEG_exec_thm",
-  LIST_CONJ(argsPEG_start::ds::lookups));
+val argPEG_exec_thm = save_thm(
+  "argPEG_exec_thm",
+  LIST_CONJ(argPEG_start::ds::lookups));
 
-val _ = computeLib.add_persistent_funs["argsPEG_exec_thm"];
-val _ = save_thm("FDOM_argsPEG", fdom_thm);
-val _ = save_thm("argsPEG_applied", LIST_CONJ applieds);
+val _ = computeLib.add_persistent_funs["argPEG_exec_thm"];
+val _ = save_thm("FDOM_argPEG", fdom_thm);
+val _ = save_thm("argPEG_applied", LIST_CONJ applieds);
 
 val frange_image = prove(
   ``FRANGE fm = IMAGE (FAPPLY fm) (FDOM fm)``,
   simp[finite_mapTheory.FRANGE_DEF, pred_setTheory.EXTENSION] >> metis_tac[]);
 
-val argsPEG_range =
+val argPEG_range =
     SIMP_CONV (srw_ss())
               (fdom_thm :: frange_image :: applieds)
-              ``FRANGE argsPEG.rules``;
+              ``FRANGE argPEG.rules``;
 
 val subexprs_pnt = prove(
   ``subexprs (pnt n) = {pnt n}``,
   simp[subexprs_def, pnt_def]);
 
-val Gexprs_argsPEG = save_thm(
-  "Gexprs_argsPEG",
-  ``Gexprs argsPEG``
+val Gexprs_argPEG = save_thm(
+  "Gexprs_argPEG",
+  ``Gexprs argPEG``
     |> SIMP_CONV (srw_ss())
          [Gexprs_def, subexprs_def,
-          subexprs_pnt, argsPEG_start, argsPEG_range,
+          subexprs_pnt, argPEG_start, argPEG_range,
           ignoreR_def, ignoreL_def,
           choicel_def, tokeq_def, pegf_def, grabWS_def,
-          checkAhead_def, seql_def,
+          checkAhead_def,
           pred_setTheory.INSERT_UNION_EQ
          ]);
 
-
 val wfpeg_rwts = wfpeg_cases
-                   |> ISPEC ``argsPEG``
+                   |> ISPEC ``argPEG``
                    |> (fn th => map (fn t => Q.SPEC t th)
                                     [`seq e1 e2 f`, `choice e1 e2 f`, `tok P f`,
                                      `any f`, `empty v`, `not e v`, `rpt e f`,
@@ -163,34 +210,24 @@ val wfpeg_rwts = wfpeg_cases
                    |> map (CONV_RULE
                              (RAND_CONV (SIMP_CONV (srw_ss())
                                 [choicel_def, tokeq_def, ignoreL_def,
-                                 ignoreR_def, pegf_def, grabWS_def, seql_def])));
+                                 ignoreR_def, pegf_def, grabWS_def])));
 
 val peg0_grabWS = Q.prove(
-  `peg0 argsPEG (grabWS e) = peg0 argsPEG e`,
+  `peg0 argPEG (grabWS e) = peg0 argPEG e`,
   simp [ignoreL_def, grabWS_def, peg0_rules]);
 
-val wfpeg_grabWS = (* wfpeg argsPEG (grabWS e) ⇔ wfpeg argsPEG e *)
+val wfpeg_grabWS = (* wfpeg argPEG (grabWS e) ⇔ wfpeg argPEG e *)
   SIMP_CONV (srw_ss()) ([grabWS_def, ignoreL_def, peg0_grabWS] @ wfpeg_rwts)
-                       ``wfpeg argsPEG (grabWS e)``;
-
-val peg0_seql = store_thm(
-  "peg0_seql",
-  ``(peg0 G (seql [] f) ⇔ T) ∧
-    (peg0 G (seql (h::t) f) ⇔ peg0 G h ∧ peg0 G (seql t I))``,
-  simp[seql_def]);
-
-val wfpeg_seql = (* wfpeg argsPEG (grabWS e) ⇔ wfpeg argsPEG e *)
-  SIMP_CONV (srw_ss()) ([seql_def, ignoreL_def, peg0_seql] @ wfpeg_rwts)
-                       ``wfpeg argsPEG (seql l f)``;
+                       ``wfpeg argPEG (grabWS e)``;
 
 val wfpeg_pnt = wfpeg_cases
-                  |> ISPEC ``argsPEG``
+                  |> ISPEC ``argPEG``
                   |> Q.SPEC `pnt n`
                   |> CONV_RULE (RAND_CONV (SIMP_CONV (srw_ss()) [pnt_def]));
 
 
 val peg0_rwts = peg0_cases
-                  |> ISPEC ``argsPEG`` |> CONJUNCTS
+                  |> ISPEC ``argPEG`` |> CONJUNCTS
                   |> map (fn th => map (fn t => Q.SPEC t th)
                                        [`tok P f`, `choice e1 e2 f`, `seq e1 e2 f`,
                                         `tokeq t f`, `empty l`, `not e v`, `rpt e f`])
@@ -198,7 +235,6 @@ val peg0_rwts = peg0_cases
                   |> map (CONV_RULE
                             (RAND_CONV (SIMP_CONV (srw_ss())
                                                   [tokeq_def])));
-
 
 val pegfail_t = ``pegfail``;
 
@@ -215,14 +251,14 @@ in
 end;
 
 val pegnt_case_ths = peg0_cases
-                      |> ISPEC ``argsPEG`` |> CONJUNCTS
+                      |> ISPEC ``argPEG`` |> CONJUNCTS
                       |> map (Q.SPEC `pnt n`)
                       |> map (CONV_RULE (RAND_CONV (SIMP_CONV (srw_ss()) [pnt_def])))
 
 fun pegnt(t,acc) = let
   val th =
-      prove(``¬peg0 argsPEG (pnt ^t)``,
-            simp (seql_def::ident_def::fdom_thm::choicel_def::ignoreL_def::grabWS_def::ignoreR_def::applieds @ pegnt_case_ths) >>
+      prove(``¬peg0 argPEG (pnt ^t)``,
+            simp (pegf_def::ident_def::fdom_thm::choicel_def::ignoreL_def::grabWS_def::ignoreR_def::applieds @ pegnt_case_ths) >>
             simp(peg0_rwts @ acc))
   val nm = "peg0_" ^ term_to_string t
   val th' = save_thm(nm, SIMP_RULE bool_ss [pnt_def] th)
@@ -233,34 +269,38 @@ end;
 
 val npeg0_rwts =
     List.foldl pegnt []
-   [``argOption_NT``,
-    ``argSingle_NT``];
+   [``ShortFlag_NT``
+   ,``LongFlag_NT``
+   ,``OptionFlag_NT``
+   ,``Option_NT``];
 
 fun wfnt(t,acc) = let
   val th =
-    prove(``wfpeg argsPEG (pnt ^t)``,
+    prove(``wfpeg argPEG (pnt ^t)``,
           SIMP_TAC (srw_ss())
                    (applieds @
                     [wfpeg_pnt, fdom_thm, ignoreL_def, ignoreR_def,
                      checkAhead_def, ident_def]) THEN
-          fs(peg0_seql :: peg0_grabWS :: wfpeg_seql :: wfpeg_grabWS :: wfpeg_rwts @ npeg0_rwts @ acc) THEN
+          fs(peg0_grabWS :: wfpeg_grabWS :: wfpeg_rwts @ npeg0_rwts @ acc) THEN
          rw [choicel_def])
 in
   th::acc
 end;
 
-val wfpeg_thm = LIST_CONJ (List.foldl wfnt [] [``argOption_NT``,
-                                               ``argSingle_NT``,
-                                               ``argList_NT``]);
+val wfpeg_thm = LIST_CONJ (List.foldl wfnt [] [``ShortFlag_NT``
+                                              ,``LongFlag_NT``
+                                              ,``OptionFlag_NT``
+                                              ,``Option_NT``
+                                              ,``init_NT``]);
 
-val wfG_argsPEG = store_thm(
-  "wfG_argsPEG",
-  ``wfG argsPEG``,
-  rw[wfG_def,Gexprs_argsPEG,ident_def] >>
+val wfG_argPEG = store_thm(
+  "wfG_argPEG",
+  ``wfG argPEG``,
+  rw[wfG_def,Gexprs_argPEG,ident_def] >>
   srw_tac[boolSimps.DNF_ss][] >>
   simp(wfpeg_thm :: wfpeg_rwts));
 
-val _ = export_rewrites ["wfG_argsPEG"];
+val _ = export_rewrites ["wfG_argPEG"];
 
 
 val _ = monadsyntax.temp_add_monadsyntax()
@@ -295,8 +335,8 @@ val add_locs_def = Define`
 `;
 
 val parse_args_def = Define`
-  parse_args s = do
-    (rest,args) <- destResult (peg_exec argsPEG (pnt argList_NT) (add_locs s) [] done failed);
+  parse_arg s = do
+    (rest,args) <- destResult (peg_exec argPEG (pnt init_NT) (add_locs s) [] done failed);
     if rest <> [] then NONE else SOME args
   od
 `;
