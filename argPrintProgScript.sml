@@ -1,7 +1,7 @@
 open preamble basis compilationLib
-open argsParseTheory pegTheory pegexecTheory
+open argParseTheory pegTheory pegexecTheory
 
-val _ = new_theory"argsParseProg";
+val _ = new_theory"argPrintProg";
 
 val _ = translation_extends"basisProg";
 

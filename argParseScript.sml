@@ -2,50 +2,9 @@ open preamble basis
 
 open pegTheory pegexecTheory pegLib
 
-val _ = new_theory"argsParse";
+open argTheory
 
-(* Datatype representing all the possible options/flags *)
-val _ = Datatype`
-  arg =
-  (* Simple flags of the form -<ident> eg: -h *)
-         ShortFlag mlstring
-  (* Long flags of the form --<ident>+ eg: --help *)
-       | LongFlag mlstring
-  (* Long flags with option of the form --<ident>+=<ident>+
-     eg: --arch=arm6 *)
-       | OptionFlag mlstring mlstring
-  (* Standalone option of the form <ident>+ eg: cake.S*)
-       | Option mlstring
-  (* Where <ident> is equal to the regular expression [a-zA-Z0-9.-/_]
-     (or similar) *)
-`;
-
-(* An arbitrary term of 'arg' to serve as ARB in some definitions *)
-val arb_arg_def = Define`
-  arb_arg = Option (implode "")
-`;
-
-(* Destructors for 'arg' terms *)
-
-val destShortFlag_def = Define`
-  destShortFlag (ShortFlag flag) = flag ∧
-  destShortFlag _ = (implode "")
-`;
-
-val destOption_def = Define`
-  destOption (Option opt) = opt ∧
-  destOption _ = (implode "")
-`;
-
-val destLongFlag = Define`
-  destLongFlag (LongFlag flag) = flag ∧
-  destLongFlag _ = (implode "")
-`;
-
-val destOptionFlag = Define`
-  destOptionFlag (OptionFlag flag opt) = (flag,opt) ∧
-  destOptionFlag _ = ((implode ""),(implode ""))
-`;
+val _ = new_theory"argParse";
 
 (* Non Terminal for the grammar *)
 val _ = Datatype`
@@ -154,8 +113,7 @@ val argPEG_def = zDefine`
     ]|>
 `;
 
-(* wfG proof *)
-
+(* wfG proof for argPEG *)
 val argPEG_start = save_thm(
   "argPEG_start[simp]",
   SIMP_CONV(srw_ss())[argPEG_def]``argPEG.start``);
@@ -293,6 +251,7 @@ val wfpeg_thm = LIST_CONJ (List.foldl wfnt [] [``ShortFlag_NT``
                                               ,``Option_NT``
                                               ,``init_NT``]);
 
+(* This is the actual well-formedness proof for argPEG *)
 val wfG_argPEG = store_thm(
   "wfG_argPEG",
   ``wfG argPEG``,
@@ -300,9 +259,10 @@ val wfG_argPEG = store_thm(
   srw_tac[boolSimps.DNF_ss][] >>
   simp(wfpeg_thm :: wfpeg_rwts));
 
+(* Export 'wfG argPEG' into the simpset *)
 val _ = export_rewrites ["wfG_argPEG"];
 
-
+(* Setup monad syntax for the 'option' monad *)
 val _ = monadsyntax.temp_add_monadsyntax()
 val _ = overload_on ("monad_bind", “OPTION_BIND”)
 val _ = overload_on ("assert", “OPTION_GUARD”)
@@ -313,11 +273,16 @@ val _ = computeLib.add_persistent_funs ["option.OPTION_BIND_def",
                                         "option.OPTION_CHOICE_def"];
 
 
+(* Default start location *)
+(* TODO: make sure this is correct *)
 val start_locs_def = Define`
   start_locs : locs = Locs (<|row := 0 ; col := 0 ; offset := 0|>)
                            (<|row := 0 ; col := 0 ; offset := 0|>)
 `;
 
+(* Given a 'string' generates a '(char, locs) alist' with information
+   about the location of each character in the string
+*)
 val add_locs_def = Define`
   add_locs l =
     let new_char loc = loc with <| col  := loc.col + 1 ;
