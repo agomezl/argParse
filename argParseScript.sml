@@ -299,12 +299,29 @@ val add_locs_def = Define`
     in SND (FOLDR update (start_locs,[]) l)
 `;
 
-val parse_args_def = Define`
+val parse_arg_def = Define`
   parse_arg s = do
     (rest,args) <- destResult (peg_exec argPEG (pnt init_NT) (add_locs s) [] done failed);
     if rest <> [] then NONE else SOME args
   od
 `;
 
+val parse_arg_list_aux = Define`
+  parse_arg_list_aux [] fs      = INR (REVERSE fs) ∧
+  parse_arg_list_aux (x::xs) fs =
+    case parse_arg x of
+        NONE   => INL ("Parse error on: " ++ x)
+      | SOME s => parse_arg_list_aux xs (s::fs)
+`;
+
+val parse_arg_list_def = Define`
+  parse_arg_list l = parse_arg_list_aux l []
+`;
+
+val parse_conf_def = Define`
+  parse_conf l conf = case parse_arg_list l of
+                          INL m    => INL (implode m)
+                       |  INR args => conf args
+`;
 
 val _ = export_theory()
