@@ -49,6 +49,28 @@ val destOptionFlag_def = Define`
 
 (* Auxiliary functions *)
 
+(* Get the name of each flag and the empty string in case of an option *)
+val getFlagName_def = Define`
+  getFlagName (ShortFlag f)    = f   ∧
+  getFlagName (LongFlag f)     = f   ∧
+  getFlagName (OptionFlag f _) = f ∧
+  getFlagName _                = implode ""
+`;
+
+(* Wheter the argument is a Flag *)
+val isFlag_def = Define`
+  isFlag (Option _) = F ∧
+  isFlag _          = T
+`;
+
+(* Pretty prints values or type 'arg' *)
+val showFlag_def = Define`
+  showFlag (ShortFlag f)     = implode "-"  ^ f ∧
+  showFlag (LongFlag f)      = implode "--" ^ f ∧
+  showFlag (OptionFlag f s)  = implode "--" ^ f ^ implode "=" ^ s ∧
+  showFlag (Option s)        = s
+`;
+
 (* Expands shortFlag(s) into single values when grouped in a single
    shortFlag (eg: '[ShortFlag "ab"]' expands to [ShortFlag "a", ShortFlag "b"])
  *)
@@ -76,6 +98,68 @@ val _ = Datatype`
                some argument
              *)
             cont : mlstring option -> 'a -> 'a |>
+`;
+
+
+val matchArgs_def = Define`
+  matchArg [] arg mOpt a = (if isFlag arg
+                            then INL (implode "Unrecognized flag: " ^ showFlag arg)
+                            (* TODO: Check for extra options *)
+                            else INR (a,F)) ∧
+  matchArg (f::fs) arg mOpt a =
+    let flagName = getFlagName arg;
+        strEq = (λx y. case compare x y of Equal => T | _ => F);
+        pArg = showFlag arg;
+        (* Does the current argument match with the current flag options? *)
+        matchFlag  = (isFlag arg ∧ (* is the current argument a flag? *)
+                     (strEq f.name flagName ∨  (* match the long name?  *)
+                      strEq (str f.short) flagName)) (* match the short name? *)
+    in if matchFlag
+       then if f.opt
+            then if IS_SOME mOpt
+                 then INR (f.cont mOpt a,T)
+                 else INL (implode "Missing value to: " ^ pArg)
+            else case arg of
+                     OptionFlag _ _ => INL (implode "Malformed flag: " ^ pArg)
+                  | _               => INR (f.cont NONE a,F)
+       else matchArg fs arg mOpt a
+`;
+
+val mkArgsConf_def = tDefine "mkArgsConf" `
+  mkArgsConf fs a [] = INR a ∧
+  mkArgsConf fs a (x::xs) =
+    let flagOpt = (* Tries to find and option after a flag *)
+          case xs of (* Look for the tail of the argument list *)
+              []      => NONE (* If empty there is no extra option *)
+            | (x::xs) => if isFlag x (* is the next value a flag? *)
+                         then NONE   (* There is no option then *)
+                         else SOME (destOption x) (* That is you options *)
+    in
+    case matchArg fs x flagOpt a of
+        INL m => INL m
+     |  INR (b,T) => mkArgsConf fs b (DROP 1 xs)
+     |  INR (b,F) => mkArgsConf fs b xs`
+(wf_rel_tac `measure (LENGTH o SND o SND)` >> rw [LENGTH]);
+
+
+val test_conf_def = Define`
+  test_conf = mkArgsConf [<| name  := implode "one" ;
+                             short := #"1" ;
+                             desc  := implode "flag1" ;
+                             opt   := F;
+                             cont  := K (λx. case x of (_,b,c) => (T,b,c))|>;
+                          <| name  := implode "two" ;
+                             short := #"2" ;
+                             desc  := implode "flag2" ;
+                             opt   := T;
+                             cont  := (λx y. case y of (a,_,c) => (a,x,c))|>;
+                          <| name  := implode "three" ;
+                             short := #"3" ;
+                             desc  := implode "flag3" ;
+                             opt   := F;
+                             cont  := K (λx. case x of (a,b,_) => (a,b,T))|>
+                         ]
+                    (F,NONE,F)
 `;
 
 val _ = export_theory()
