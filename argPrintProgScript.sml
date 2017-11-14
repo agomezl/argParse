@@ -1,5 +1,6 @@
 open preamble basis compilationLib
-open argParseTheory pegTheory pegexecTheory
+open pegexecTheory
+open argParseTheory argTheory
 
 val _ = new_theory"argPrintProg";
 
@@ -37,19 +38,19 @@ val _ = find_def_for_const := def_of_const;
 
 val r = translate coreloop_def';
 
-val r = translate (pegexecTheory.peg_exec_def);
+val r = translate pegexecTheory.peg_exec_def;
 
-val r = translate (argsPEG_def |> REWRITE_RULE [tokeq_def]);
+val r = translate (argPEG_def |> REWRITE_RULE [tokeq_def]);
 
-val r = translate parse_args_def;
+val r = translate parse_arg_def;
 
 val termination_lemma =
-  MATCH_MP pegexecTheory.coreloop_total wfG_argsPEG
+  MATCH_MP pegexecTheory.coreloop_total wfG_argPEG
   |> SIMP_RULE(srw_ss())[coreloop_def'];
 
-val parse_args_side = Q.prove(
-  `∀x. parse_args_side x = T`,
-  rw[definition"parse_args_side_def"] \\
+val parse_arg_side = Q.prove(
+  `∀x. parse_arg_side x = T`,
+  rw[definition"parse_arg_side_def"] \\
   rw[definition"peg_exec_side_def"] \\
   rw[definition"coreloop_side_def"]
   >- (qspec_then`add_locs x` strip_assume_tac (Q.GEN`i`termination_lemma) \\
@@ -60,22 +61,64 @@ val parse_args_side = Q.prove(
       \\ simp[FUN_EQ_THM]
       \\ Cases \\ simp[]
       \\ TOP_CASE_TAC \\ simp[] ) \\ fs[])
- >- (PairRules.PMATCH_MP peg_exec_total wfG_argsPEG
-                         |> SIMP_RULE std_ss [argsPEG_start]
+ >- (PairRules.PMATCH_MP peg_exec_total wfG_argPEG
+                         |> SIMP_RULE std_ss [argPEG_start]
                          |> INST [``i : (char ,locs) alist`` |-> ``add_locs x``]
                          |> ASSUME_TAC  \\
      fs [definition"destresult_side_def"])) |> update_precondition;
 
+val r = translate parse_arg_list_def;
+
+val r = translate parse_conf_def;
+
+val r = translate mkArgsConf_def;
+
+val args_conf_def = Define`
+  args_conf =
+    mkArgsConf [<| name  := implode "alpha" ;
+                   short := #"a" ;
+                   desc  := implode "first number" ;
+                   opt   := T;
+                   cont  := (λa x.
+                     case x of
+                         INR (NONE,b)     => INR (OPTION_MAP fromString_unsafe a ,b)
+                       | INR (SOME _ , b) => INL (implode "There is already an alpha value")
+                       | e                => e)|>;
+                <| name  := implode "beta" ;
+                   short := #"b" ;
+                   desc  := implode "second number" ;
+                   opt   := T;
+                   cont  := (λb x.
+                     case x of
+                         INR (a,NONE)   => INR (a,OPTION_MAP fromString_unsafe b)
+                       | INR (a,SOME _) => INL (implode "There is already a beta value")
+                       | e              => e)|>;
+                <| name  := implode "help" ;
+                   short := #"h" ;
+                   desc  := implode "Help message" ;
+                   opt   := F;
+                   cont  := K (λx. INL (implode "Help message"))|>;
+                <| name  := implode "version" ;
+                   short := #"v" ;
+                   desc  := implode "Print version" ;
+                   opt   := F;
+                   cont  := K (λx. INL (implode "Version 0.1"))|>
+               ] (INR (NONE,NONE))
+`;
+
 val print_args_def = Define`
 print_args args =
-    let prntarg a = case a of
-                      | Option x (SOME y) => implode (x ++ " -> " ++ y)
-                      | Option x NONE => implode (x ++ " -> NONE")
-                      | Single x => implode x;
-        argstr = explode (concatWith (implode " ") args)
-    in case parse_args argstr of
-         | NONE   => (implode "Error")
-         | SOME l => concatWith (implode "\n") (MAP prntarg l)
+    let prntarg a =
+        case a of
+            INR (SOME a, SOME b) => implode "Result: " ^ toString (a + b)
+          | INR (NONE  , SOME _) => implode "Alpha value missing"
+          | INR (SOME _, NONE)   => implode "Beta value missing"
+          | INR _                => implode "No values"
+          | INL e                => e;
+        argl = MAP explode args
+    in case parse_conf argl args_conf of
+         | INL e   => e ^ implode "\n"
+         | INR l => prntarg l ^ implode "\n"
 `;
 
 val r = translate print_args_def;
