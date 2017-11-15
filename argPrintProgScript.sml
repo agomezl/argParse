@@ -116,7 +116,7 @@ print_args args =
           | INR _                => implode "No values"
           | INL e                => e;
         argl = MAP explode args
-    in case parse_conf argl args_conf of
+    in case parse_conf args_conf argl of
          | INL e   => e ^ implode "\n"
          | INR l => prntarg l ^ implode "\n"
 `;

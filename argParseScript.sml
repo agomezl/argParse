@@ -319,7 +319,7 @@ val parse_arg_list_def = Define`
 `;
 
 val parse_conf_def = Define`
-  parse_conf l conf = case parse_arg_list l of
+  parse_conf conf l = case parse_arg_list l of
                           INL m    => INL (implode m)
                        |  INR args => conf (expandArgs args)
 `;
